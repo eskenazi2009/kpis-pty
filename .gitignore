@@ -1,0 +1,10 @@
+# Excel temp lock files
+~$*.xlsx
+
+# Raw source spreadsheets are kept private by default.
+# The dashboard already embeds the data it needs, so they are not required
+# to view the page. Delete the lines below if you DO want the .xlsx in the repo.
+SPORT FACTORY_KPI *.xlsx
+
+# Claude Code local config
+.claude/
