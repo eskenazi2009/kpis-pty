@@ -364,9 +364,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <label for="kpi">Indicador (KPI)</label>
       <select id="kpi"></select>
     </div>
-    <div class="ctl" id="ctlCmp">
-      <label for="cmp">Comparar años</label>
-      <select id="cmp"></select>
+    <div class="ctl" id="ctlYears">
+      <label>Años (compara 1–3)</label>
+      <div class="stores" id="years"></div>
     </div>
     <div class="ctl">
       <label>Período</label>
@@ -393,12 +393,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="chartbox" id="yoy"></div>
         <div class="legend" id="yoyLegend"></div>
       </div>
-    </div>
-    <div class="panel">
-      <h2>Todos los KPIs juntos <span class="hint" id="allHint"></span></h2>
-      <div class="chartbox" id="allk"></div>
-      <div class="legend" id="allLegend"></div>
-      <div class="foot">Cada KPI se escala a su propio máximo (0–100%) para verse en el mismo gráfico. Pasa el mouse para ver los valores reales.</div>
     </div>
     <div class="panel">
       <h2>Comparación por tienda <span class="hint" id="tableHint"></span></h2>
@@ -444,7 +438,8 @@ const KPIS = [
   {id:"margen", label:"MARGEN %", desc:"Margen bruto (%)",    fmt:"pct1",  color:"#22d3ee"},
 ];
 const KMAP = Object.fromEntries(KPIS.map(k=>[k.id,k]));
-const COL = {a:"#4da3ff", b:"#ff8c42"};       // older year, newer year
+const YEAR_COLORS = ["#4da3ff","#ff8c42","#36d399","#c084fc","#fbbf24"]; // by year index
+function yearColor(y){ return YEAR_COLORS[Math.max(0,YEARS.indexOf(y))%YEAR_COLORS.length]; }
 const BCOL = {p:"#7c8aa0", r:"#4da3ff"};      // presupuesto, real
 
 // ---- formatting -----------------------------------------------------------
@@ -475,9 +470,11 @@ function monthsWithData(year, store){
   const s = (DATA[year]||{})[store]||{};
   return MONTHS.filter(m=>s[m]);
 }
-function commonMonths(store, yA, yB){
-  const a=new Set(monthsWithData(yA,store)), b=new Set(monthsWithData(yB,store));
-  return periodMonths().filter(m=>a.has(m)&&b.has(m));
+function selectedYears(){ return YEARS.filter(y=>state.years.includes(y)); }
+// months (within the period) present in EVERY selected year -> like-for-like
+function comparableMonths(store){
+  const ys=selectedYears();
+  return periodMonths().filter(m=> ys.every(y=> (DATA[y]||{})[store] && (DATA[y]||{})[store][m]));
 }
 function ytd(year, store, kpi, months){
   const s=(DATA[year]||{})[store]||{};
@@ -497,8 +494,8 @@ function ytd(year, store, kpi, months){
 }
 
 // ---- state ----------------------------------------------------------------
-const state = {tab:"kpis", period:"all", kpi:"ventas", store:null, yA:null, yB:null,
-               sortKey:"db", sortDir:-1};
+const state = {tab:"kpis", period:"all", kpi:"ventas", store:null, years:[],
+               sortKey:null, sortDir:-1};
 
 function allStores(){
   const set=[];
@@ -560,25 +557,33 @@ function niceMax(v){
 // ---- KPI cards ------------------------------------------------------------
 function renderCards(){
   const wrap=document.getElementById("cards"); wrap.innerHTML="";
-  const cm = commonMonths(state.store, state.yA, state.yB);
+  const ys=selectedYears();
+  const last=ys[ys.length-1], prev=ys.length>=2?ys[ys.length-2]:null;
+  const cm = comparableMonths(state.store);
   const periodLbl = cm.length ? `${MONTH_LABEL[cm[0]]}–${MONTH_LABEL[cm[cm.length-1]]}` : "—";
   KPIS.forEach(k=>{
-    const a=ytd(state.yA, state.store, k.id, cm);
-    const b=ytd(state.yB, state.store, k.id, cm);
-    // for margin, "growth %" is misleading; show percentage-point change instead
-    let deltaMarkup;
-    if(k.id==="margen"){
-      const d=(a!=null&&b!=null)?(b-a):null;
-      deltaMarkup = d===null?'<div class="delta flat">—</div>':
-        `<div class="delta ${d>0.05?"up":d<-0.05?"down":"flat"}">${d>=0?"+":""}${d.toFixed(1)} pp</div>`;
-    } else deltaMarkup = deltaHtml(pct(a,b));
+    const bv=ytd(last, state.store, k.id, cm);
+    // delta of the newest selected year vs the previous selected year
+    let deltaMarkup="";
+    if(prev){
+      const pv=ytd(prev, state.store, k.id, cm);
+      if(k.id==="margen"){
+        const d=(pv!=null&&bv!=null)?(bv-pv):null;
+        deltaMarkup = d===null?'<div class="delta flat">—</div>':
+          `<div class="delta ${d>0.05?"up":d<-0.05?"down":"flat"}">${d>=0?"+":""}${d.toFixed(1)} pp <span style="color:var(--muted);font-weight:400">vs ${prev}</span></div>`;
+      } else {
+        const p=pct(pv,bv);
+        deltaMarkup = p===null?'<div class="delta flat">—</div>':
+          `<div class="delta ${p>0.05?"up":p<-0.05?"down":"flat"}">${p>=0?"+":""}${p.toFixed(1)}% <span style="color:var(--muted);font-weight:400">vs ${prev}</span></div>`;
+      }
+    }
+    const others=ys.slice(0,-1).map(y=>`<div class="prev">${y}: ${fmtVal(ytd(y,state.store,k.id,cm),k.fmt)}</div>`).join("");
     const div=document.createElement("div");
     div.className="card click"+(k.id===state.kpi?" sel":"");
     div.innerHTML=`<div class="k">${k.label}</div>
-      <div class="v">${fmtVal(b,k.fmt)}</div>
-      <div class="prev">${state.yB} · ${periodLbl}</div>
-      ${deltaMarkup}
-      <div class="prev">vs ${state.yA}: ${fmtVal(a,k.fmt)}</div>`;
+      <div class="v">${fmtVal(bv,k.fmt)}</div>
+      <div class="prev">${last} · ${periodLbl}</div>
+      ${deltaMarkup}${others}`;
     div.onclick=()=>{state.kpi=k.id; render();};
     wrap.appendChild(div);
   });
@@ -586,14 +591,12 @@ function renderCards(){
 
 // ---- trend (line, single KPI, both years) ---------------------------------
 function renderTrend(){
-  const k=KMAP[state.kpi], XM=periodMonths();
+  const k=KMAP[state.kpi], XM=periodMonths(), ys=selectedYears();
   document.getElementById("trendHint").textContent = `${k.label} · ${state.store} · ${periodLabel()}`;
   const W=560,H=300,PL=64,PR=16,PT=16,PB=34;
-  const sA=(DATA[state.yA]||{})[state.store]||{};
-  const sB=(DATA[state.yB]||{})[state.store]||{};
+  const series = ys.map(y=>({year:y, s:(DATA[y]||{})[state.store]||{}, color:yearColor(y)}));
   const vals=[];
-  XM.forEach(m=>{ if(sA[m]&&sA[m][k.id]!=null) vals.push(sA[m][k.id]);
-                  if(sB[m]&&sB[m][k.id]!=null) vals.push(sB[m][k.id]); });
+  series.forEach(se=> XM.forEach(m=>{ if(se.s[m]&&se.s[m][k.id]!=null) vals.push(se.s[m][k.id]); }));
   const max = niceMax(vals.length?Math.max(...vals):1);
   const plotW=W-PL-PR, step=plotW/Math.max(1,(XM.length-1));
   const x=i=> PL + i*step, y=v=> H-PB - (v/max)*(H-PT-PB);
@@ -602,20 +605,18 @@ function renderTrend(){
     g.add(`<line x1="${PL}" y1="${yy}" x2="${W-PR}" y2="${yy}" stroke="#2e3a4d" stroke-width="1"/>`);
     g.add(txt(PL-8,yy+4,fmtVal(val,k.fmt),{anchor:"end",size:10}));}
   XM.forEach((m,i)=>g.add(txt(x(i),H-PB+18,MONTH_LABEL[m],{size:10})));
-  function line(store,color){
+  series.forEach(se=>{
     let d="",pts="",started=false;
-    XM.forEach((m,i)=>{const rec=store[m]; if(rec&&rec[k.id]!=null){
+    XM.forEach((m,i)=>{const rec=se.s[m]; if(rec&&rec[k.id]!=null){
       const X=x(i),Y=y(rec[k.id]); d+=(started?"L":"M")+X+" "+Y+" "; started=true;
-      pts+=`<circle cx="${X}" cy="${Y}" r="3.2" fill="${color}"/>`;}});
-    if(d) g.add(`<path d="${d}" fill="none" stroke="${color}" stroke-width="2.4"/>`);
+      pts+=`<circle cx="${X}" cy="${Y}" r="3.2" fill="${se.color}"/>`;}});
+    if(d) g.add(`<path d="${d}" fill="none" stroke="${se.color}" stroke-width="2.4"/>`);
     g.add(pts);
-  }
-  line(sA,COL.a); line(sB,COL.b);
+  });
   const model={xs:XM.map((m,i)=>x(i)), guideTop:PT, guideBottom:H-PB, months:[]};
   XM.forEach((m,i)=>{
-    const rows=[];
-    if(sA[m]&&sA[m][k.id]!=null) rows.push({color:COL.a,label:state.yA,val:fmtVal(sA[m][k.id],k.fmt)});
-    if(sB[m]&&sB[m][k.id]!=null) rows.push({color:COL.b,label:state.yB,val:fmtVal(sB[m][k.id],k.fmt)});
+    const rows=series.filter(se=>se.s[m]&&se.s[m][k.id]!=null)
+      .map(se=>({color:se.color,label:se.year,val:fmtVal(se.s[m][k.id],k.fmt)}));
     if(rows.length){
       model.months[i]={html:tipHtml(`${MONTH_LABEL[m]} · ${k.label}`,rows)};
       const zx=Math.max(PL,x(i)-step/2), zw=Math.min(step,W-PR-zx);
@@ -624,92 +625,64 @@ function renderTrend(){
   });
   const c=document.getElementById("trend"); c.innerHTML=g.out(); attachHover(c,model);
   document.getElementById("trendLegend").innerHTML=
-    `<span><i style="background:${COL.a}"></i>${state.yA}</span>
-     <span><i style="background:${COL.b}"></i>${state.yB}</span>`;
+    series.map(se=>`<span><i style="background:${se.color}"></i>${se.year}</span>`).join("");
 }
 
 // ---- YoY (grouped bars) ---------------------------------------------------
 function renderYoY(){
-  const k=KMAP[state.kpi];
+  const k=KMAP[state.kpi], ys=selectedYears();
   document.getElementById("yoyHint").textContent = `${k.label} · ${state.store} · ${periodLabel()}`;
-  const cm = commonMonths(state.store, state.yA, state.yB);
+  const cm = comparableMonths(state.store);
   const W=560,H=300,PL=64,PR=16,PT=16,PB=34;
   const g=svgEl(W,H);
   if(!cm.length){ g.add(txt(W/2,H/2,"Sin meses comparables",{size:13}));
     document.getElementById("yoy").innerHTML=g.out();
     document.getElementById("yoyLegend").innerHTML=""; return; }
-  const sA=DATA[state.yA][state.store], sB=DATA[state.yB][state.store];
-  const vals=[]; cm.forEach(m=>{vals.push(sA[m][k.id],sB[m][k.id]);});
+  const S = ys.map(y=>({year:y, s:DATA[y][state.store], color:yearColor(y)}));
+  const vals=[]; cm.forEach(m=> S.forEach(se=>vals.push(se.s[m][k.id])));
   const max=niceMax(Math.max(...vals));
   const y=v=> H-PB - (v/max)*(H-PT-PB);
-  const band=(W-PL-PR)/cm.length, bw=Math.min(26,band/3);
+  const band=(W-PL-PR)/cm.length;
+  const total=S.length;
+  const barW=Math.max(6,Math.min(28,(band*0.8)/total));
+  const space=Math.min(4,band*0.04);
+  const groupW=total*barW+(total-1)*space;
   for(let t=0;t<=4;t++){const yy=PT+(H-PT-PB)*t/4; const val=max*(1-t/4);
     g.add(`<line x1="${PL}" y1="${yy}" x2="${W-PR}" y2="${yy}" stroke="#2e3a4d" stroke-width="1"/>`);
     g.add(txt(PL-8,yy+4,fmtVal(val,k.fmt),{anchor:"end",size:10}));}
   const model={xs:[], guideTop:PT, guideBottom:H-PB, months:[]};
   cm.forEach((m,i)=>{
-    const cx=PL+band*i+band/2, va=sA[m][k.id], vb=sB[m][k.id];
-    g.add(`<rect x="${cx-bw-2}" y="${y(va)}" width="${bw}" height="${H-PB-y(va)}" fill="${COL.a}" rx="2"/>`);
-    g.add(`<rect x="${cx+2}" y="${y(vb)}" width="${bw}" height="${H-PB-y(vb)}" fill="${COL.b}" rx="2"/>`);
+    const cx=PL+band*i+band/2, x0=cx-groupW/2;
+    S.forEach((se,j)=>{ const v=se.s[m][k.id], bx=x0+j*(barW+space);
+      g.add(`<rect x="${bx}" y="${y(v)}" width="${barW}" height="${H-PB-y(v)}" fill="${se.color}" rx="2"/>`); });
     g.add(txt(cx,H-PB+18,MONTH_LABEL[m],{size:10}));
     model.xs.push(cx);
-    const p=pct(va,vb);
-    model.months.push({html:tipHtml(`${MONTH_LABEL[m]} · ${k.label}`,[
-      {color:COL.a,label:state.yA,val:fmtVal(va,k.fmt)},
-      {color:COL.b,label:state.yB,val:fmtVal(vb,k.fmt)},
-      {color:"",label:"Δ",val:(p===null?"—":(p>=0?"+":"")+p.toFixed(1)+"%")},
-    ])});
+    const rows=S.map(se=>({color:se.color,label:se.year,val:fmtVal(se.s[m][k.id],k.fmt)}));
+    if(S.length>=2){
+      const a=S[0].s[m][k.id], b=S[S.length-1].s[m][k.id];
+      const d = k.id==="margen" ? (b-a) : pct(a,b);
+      rows.push({color:"",label:`Δ ${S[0].year}→${S[S.length-1].year}`,
+        val:(d===null?"—":(d>=0?"+":"")+d.toFixed(1)+(k.id==="margen"?" pp":"%"))});
+    }
+    model.months.push({html:tipHtml(`${MONTH_LABEL[m]} · ${k.label}`,rows)});
     g.add(`<rect class="hz" data-i="${i}" x="${PL+band*i}" y="${PT}" width="${band}" height="${H-PT-PB}" fill="#000" fill-opacity="0" pointer-events="all"/>`);
   });
   const c=document.getElementById("yoy"); c.innerHTML=g.out(); attachHover(c,model);
   document.getElementById("yoyLegend").innerHTML=
-    `<span><i style="background:${COL.a}"></i>${state.yA}</span>
-     <span><i style="background:${COL.b}"></i>${state.yB}</span>`;
-}
-
-// ---- all KPIs overlay (normalized) ----------------------------------------
-function renderAllKpi(){
-  const year=state.yB, s=(DATA[year]||{})[state.store]||{}, XM=periodMonths();
-  document.getElementById("allHint").textContent = `${state.store} · ${year} · ${periodLabel()} (normalizado)`;
-  const W=1140,H=320,PL=48,PR=16,PT=16,PB=34;
-  const plotW=W-PL-PR, step=plotW/Math.max(1,(XM.length-1));
-  const x=i=> PL + i*step, y=pc=> H-PB - (pc/100)*(H-PT-PB);
-  const g=svgEl(W,H);
-  for(let t=0;t<=4;t++){const yy=PT+(H-PT-PB)*t/4; const val=100*(1-t/4);
-    g.add(`<line x1="${PL}" y1="${yy}" x2="${W-PR}" y2="${yy}" stroke="#2e3a4d" stroke-width="1"/>`);
-    g.add(txt(PL-8,yy+4,val+"%",{anchor:"end",size:10}));}
-  XM.forEach((m,i)=>g.add(txt(x(i),H-PB+18,MONTH_LABEL[m],{size:10})));
-  const maxes={};
-  KPIS.forEach(k=>{ let mx=0; XM.forEach(m=>{ if(s[m]&&s[m][k.id]!=null) mx=Math.max(mx,s[m][k.id]); }); maxes[k.id]=mx||1; });
-  KPIS.forEach(k=>{
-    let d="",pts="",started=false;
-    XM.forEach((m,i)=>{ if(s[m]&&s[m][k.id]!=null){
-      const X=x(i),Y=y(s[m][k.id]/maxes[k.id]*100);
-      d+=(started?"L":"M")+X+" "+Y+" "; started=true;
-      pts+=`<circle cx="${X}" cy="${Y}" r="2.8" fill="${k.color}"/>`;}});
-    if(d) g.add(`<path d="${d}" fill="none" stroke="${k.color}" stroke-width="2.2"/>`);
-    g.add(pts);
-  });
-  const model={xs:XM.map((m,i)=>x(i)), guideTop:PT, guideBottom:H-PB, months:[]};
-  XM.forEach((m,i)=>{
-    if(s[m]){
-      const rows=KPIS.filter(k=>s[m][k.id]!=null).map(k=>({color:k.color,label:k.label,val:fmtVal(s[m][k.id],k.fmt)}));
-      model.months[i]={html:tipHtml(`${MONTH_LABEL[m]} · ${year}`,rows)};
-      const zx=Math.max(PL,x(i)-step/2), zw=Math.min(step,W-PR-zx);
-      g.add(`<rect class="hz" data-i="${i}" x="${zx}" y="${PT}" width="${zw}" height="${H-PT-PB}" fill="#000" fill-opacity="0" pointer-events="all"/>`);
-    } else model.months[i]=null;
-  });
-  const c=document.getElementById("allk"); c.innerHTML=g.out(); attachHover(c,model);
-  document.getElementById("allLegend").innerHTML=
-    KPIS.map(k=>`<span><i style="background:${k.color}"></i>${k.label}</span>`).join("");
+    S.map(se=>`<span><i style="background:${se.color}"></i>${se.year}</span>`).join("");
 }
 
 // ---- store comparison table ----------------------------------------------
 function renderTable(){
-  const k=KMAP[state.kpi];
+  const k=KMAP[state.kpi], ys=selectedYears(), isMarg=k.id==="margen";
+  const showDelta = ys.length>=2;
+  const yKey=y=>"y_"+y;
+  const cols=[{key:"store",label:"Tienda"}].concat(ys.map(y=>({key:yKey(y),label:y})));
+  if(showDelta) cols.push({key:"delta",label:isMarg?"Δ pp":"Δ%"});
+  // keep sort key valid for the current columns
+  if(!cols.some(c=>c.key===state.sortKey)) state.sortKey = yKey(ys[ys.length-1]);
+
   const thr=document.getElementById("thr"); thr.innerHTML="";
-  const cols=[{key:"store",label:"Tienda"},{key:"da",label:state.yA},
-              {key:"db",label:state.yB},{key:"delta",label:"Δ%"}];
   cols.forEach(c=>{
     const th=document.createElement("th"); th.textContent=c.label; th.dataset.key=c.key;
     if(c.key===state.sortKey){th.classList.add("sortdir"); if(state.sortDir>0)th.classList.add("asc");}
@@ -718,34 +691,35 @@ function renderTable(){
     thr.appendChild(th);
   });
   const rows=allStores().map(s=>{
-    const cm=commonMonths(s,state.yA,state.yB);
-    const da=ytd(state.yA,s,k.id,cm), db=ytd(state.yB,s,k.id,cm);
-    const delta = k.id==="margen" ? ((da!=null&&db!=null)?(db-da):null) : pct(da,db);
-    return {store:s, da, db, delta};
+    const cm=comparableMonths(s);
+    const r={store:s};
+    ys.forEach(y=> r[yKey(y)]=ytd(y,s,k.id,cm));
+    if(showDelta){ const a=r[yKey(ys[0])], b=r[yKey(ys[ys.length-1])];
+      r.delta = isMarg ? ((a!=null&&b!=null)?(b-a):null) : pct(a,b); }
+    return r;
   });
   const sk=state.sortKey, dir=state.sortDir;
   rows.sort((a,b)=>{ let x=a[sk], y=b[sk];
     if(sk==="store") return dir*String(x).localeCompare(String(y));
-    if(x===null) return 1; if(y===null) return -1; return dir*(x-y); });
+    if(x===null||x===undefined) return 1; if(y===null||y===undefined) return -1; return dir*(x-y); });
   const tb=document.getElementById("tb"); tb.innerHTML="";
-  const isMarg=k.id==="margen";
   rows.forEach(r=>{
     const tr=document.createElement("tr");
-    const dcls = r.delta===null?"":(r.delta>0?"pos":(r.delta<0?"neg":""));
-    const dtxt = r.delta===null?"—":(r.delta>=0?"+":"")+r.delta.toFixed(1)+(isMarg?" pp":"%");
-    tr.innerHTML=`<td>${r.store}${r.store===state.store?' &#9679;':''}</td>
-      <td>${fmtVal(r.da,k.fmt)}</td><td>${fmtVal(r.db,k.fmt)}</td>
-      <td class="${dcls}">${dtxt}</td>`;
-    tr.style.cursor="pointer";
+    let cells=`<td>${r.store}${r.store===state.store?' &#9679;':''}</td>`;
+    ys.forEach(y=> cells+=`<td>${fmtVal(r[yKey(y)],k.fmt)}</td>`);
+    if(showDelta){ const dcls=r.delta===null?"":(r.delta>0?"pos":(r.delta<0?"neg":""));
+      const dtxt=r.delta===null?"—":(r.delta>=0?"+":"")+r.delta.toFixed(1)+(isMarg?" pp":"%");
+      cells+=`<td class="${dcls}">${dtxt}</td>`; }
+    tr.innerHTML=cells; tr.style.cursor="pointer";
     tr.onclick=()=>{state.store=r.store; render();};
     tb.appendChild(tr);
   });
-  const cm=commonMonths(state.store,state.yA,state.yB);
+  const cm=comparableMonths(state.store);
   const per = cm.length?`${MONTH_LABEL[cm[0]]}–${MONTH_LABEL[cm[cm.length-1]]}`:"—";
   document.getElementById("tableHint").textContent=`${k.label} · acumulado comparable (${per})`;
   document.getElementById("tblFoot").textContent = isMarg
-    ? "El margen acumulado se pondera por ventas (no es promedio simple); la variación se muestra en puntos porcentuales (pp)."
-    : "Los acumulados (YTD) comparan solo los meses presentes en ambos años. UPT/VPT se recalculan sobre los acumulados.";
+    ? "El margen acumulado se pondera por ventas (no es promedio simple); la variación (pp) compara el año más antiguo vs el más reciente seleccionado."
+    : "Los acumulados (YTD) comparan solo los meses presentes en todos los años seleccionados. UPT/VPT se recalculan sobre los acumulados.";
 }
 
 // ---- Presupuesto vs Real --------------------------------------------------
@@ -858,6 +832,23 @@ function renderPeriod(){
     wrap.appendChild(b);
   });
 }
+function toggleYear(y){
+  if(state.years.includes(y)){
+    if(state.years.length>1) state.years=state.years.filter(x=>x!==y);  // keep at least 1
+  } else {
+    state.years=YEARS.filter(x=>state.years.includes(x)||x===y);        // keep chronological
+  }
+  render();
+}
+function renderYearButtons(){
+  const wrap=document.getElementById("years"); wrap.innerHTML="";
+  YEARS.forEach(y=>{
+    const b=document.createElement("button");
+    b.className="sb"+(state.years.includes(y)?" active":""); b.textContent=y;
+    b.onclick=()=>toggleYear(y);
+    wrap.appendChild(b);
+  });
+}
 function switchTab(t){
   state.tab=t;
   if(t==="budget"){ const bs=budgetStores();
@@ -869,12 +860,13 @@ function render(){
   document.querySelectorAll(".tabbtn").forEach(b=>b.classList.toggle("active",b.dataset.tab===state.tab));
   const kpisTab = state.tab==="kpis";
   document.getElementById("ctlKpi").style.display = kpisTab?"":"none";
-  document.getElementById("ctlCmp").style.display = kpisTab?"":"none";
+  document.getElementById("ctlYears").style.display = kpisTab?"":"none";
   document.getElementById("tab-kpis").style.display = kpisTab?"":"none";
   document.getElementById("tab-budget").style.display = kpisTab?"none":"";
   renderPeriod();
+  renderYearButtons();
   renderStoreButtons();
-  if(kpisTab){ renderCards(); renderTrend(); renderYoY(); renderAllKpi(); renderTable(); }
+  if(kpisTab){ renderCards(); renderTrend(); renderYoY(); renderTable(); }
   else { renderBudget(); }
 }
 
@@ -884,14 +876,6 @@ function initControls(){
   KPIS.forEach(k=>kpiSel.add(new Option(`${k.label} — ${k.desc}`, k.id)));
   kpiSel.value=state.kpi;
   kpiSel.onchange=e=>{state.kpi=e.target.value; render();};
-
-  const cmp=document.getElementById("cmp");
-  if(YEARS.length>=2){
-    for(let i=0;i<YEARS.length;i++) for(let j=i+1;j<YEARS.length;j++)
-      cmp.add(new Option(`${YEARS[i]} vs ${YEARS[j]}`, YEARS[i]+"|"+YEARS[j]));
-    cmp.value = state.yA+"|"+state.yB;
-    cmp.onchange=e=>{const [a,b]=e.target.value.split("|"); state.yA=a; state.yB=b; render();};
-  } else { cmp.add(new Option(YEARS[0], YEARS[0])); cmp.disabled=true; }
 
   document.querySelectorAll(".tabbtn").forEach(b=> b.onclick=()=>switchTab(b.dataset.tab));
   if(!budgetStores().length) document.getElementById("tabBudget").style.display="none";
@@ -916,8 +900,7 @@ function boot(payload){
   DATA = payload.data || payload;               // backward compatible
   BUDGET = payload.budget || {year:null, stores:{}};
   YEARS = Object.keys(DATA).sort();
-  state.yA = YEARS[0];
-  state.yB = YEARS[YEARS.length-1];
+  state.years = YEARS.slice(-2);                 // default: two most recent years
   initControls();
   render();
   document.getElementById("lock").style.display = "none";
