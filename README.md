@@ -7,8 +7,30 @@ Interactive, offline-capable dashboard for the Sport Factory store KPIs
 
 ## Files
 - `index.html` / `dashboard.html` — the dashboard. Self-contained, works offline; the
-  data is embedded directly in the file. `index.html` is the copy GitHub Pages serves.
-- `build_dashboard.py` — regenerates the dashboard from the Excel workbooks.
+  data is embedded (encrypted) in the file. `index.html` is the copy GitHub Pages serves.
+- `build_dashboard.py` — regenerates the dashboard from the Excel workbooks + database.
+- `build_kpi_2024_from_db.py` — generates `SPORT FACTORY_KPI 2024.xlsx` from ICG.
+
+## What the dashboard shows
+- **Two tabs:** *KPIs* (VENTAS, UDS, FACT, UPT, VPT, **MARGEN %**) and
+  *Presupuesto vs Real* (budget vs actual sales, per store + brand totals).
+- **Period filter:** Año completo / Q1 (Ene–Jun) / Q2 (Jul–Dic).
+- Year-over-year, monthly trend, all-KPIs-together, and per-store tables.
+
+## Data sources
+- `SPORT FACTORY_KPI <year>.xlsx` → VENTAS/UDS/FACT/UPT/VPT per store/month.
+- ICG **[NEWSPF]** (local SQL Server) → **MARGEN %** per store/month.
+- `Presupuesto de ventas SF 2026_JP_actualizado.xlsx` (sheet *Presupuesto de vts 2026*)
+  → the monthly budget column, for the Presupuesto vs Real tab.
+
+## Build requirements
+The build needs the ICG database (for margin), so run it with the Python that has
+`openpyxl`, `cryptography` **and** `pyodbc`, with SQL Server running locally:
+```
+"C:\Claude local\Database\.venv\Scripts\python.exe" build_dashboard.py
+```
+If the database is unreachable the dashboard still builds — only the margin KPI is
+omitted (a warning is printed).
 
 ## Password protection
 The data is **encrypted** inside the HTML (AES-256-GCM, key derived from the
